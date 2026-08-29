@@ -94,30 +94,38 @@ def action_query_rag():
         if not query_str or query_str.strip().lower() in ["back", "exit", "q"]:
             return
             
-        with console.status("[bold cyan]🧠 TRAG is querying vector space & synthesizing answer...[/bold cyan]", spinner="dots"):
-            try:
-                res = rag_engine.query_rag(query_str.strip(), collection_id=ACTIVE_COLLECTION["id"], top_k=4)
-            except Exception as e:
-                console.print(f"\n[bold red]❌ RAG Error:[/bold red] {e}\n")
-                continue
-
-        # Print Output
-        console.print("\n")
-        console.print(Panel(
-            Markdown(res["response"]),
-            title=f"[bold green]✨ TRAG Synthesis ({res['model_used']} • {res['latency']:.2f}s)[/bold green]",
-            border_style="green",
-            padding=(1, 2)
-        ))
+        console.print("\n[bold cyan]🧠 Querying vector database & streaming answer...[/bold cyan]\n")
+        sources = []
+        full_text = ""
+        latency = 0.0
+        model_used = "TRAG AI"
         
+        try:
+            console.print("[bold green]TRAG Answer:[/bold green] ", end="")
+            for chunk in rag_engine.stream_query_rag(query_str.strip(), collection_id=ACTIVE_COLLECTION["id"], top_k=4):
+                if chunk["type"] == "sources":
+                    sources = chunk.get("sources", [])
+                elif chunk["type"] == "token":
+                    token = chunk["token"]
+                    full_text += token
+                    console.print(token, end="", style="bright_white")
+                elif chunk["type"] == "done":
+                    latency = chunk["latency"]
+                    model_used = chunk["model"]
+            console.print("\n")
+            console.print(f"[dim yellow]⏱️ Latency: {latency:.2f}s | Model: {model_used}[/dim yellow]\n")
+        except Exception as e:
+            console.print(f"\n[bold red]❌ RAG Error:[/bold red] {e}\n")
+            continue
+
         # Sources Table
-        if res["sources"]:
+        if sources:
             src_table = Table(title="[bold cyan]📚 Retrieved Source Passages[/bold cyan]", border_style="cyan", show_lines=True)
             src_table.add_column("Doc / File", style="bold white", width=22)
             src_table.add_column("Similarity", justify="center", style="yellow", width=12)
             src_table.add_column("Context Snippet", style="dim white")
             
-            for s in res["sources"]:
+            for s in sources:
                 snippet = s["content"][:180].replace("\n", " ") + "..."
                 src_table.add_row(s["filename"], f"{s['similarity_score']*100:.1f}%", snippet)
             console.print(src_table)

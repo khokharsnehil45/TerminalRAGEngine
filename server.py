@@ -79,6 +79,8 @@ async def upload_document(file: UploadFile = File(...), collection_id: int = For
             save_path.unlink()
         raise HTTPException(status_code=500, detail=str(e))
 
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+
 @app.post("/api/query")
 def execute_query(data: QueryRequest):
     if not data.query.strip():
@@ -88,6 +90,17 @@ def execute_query(data: QueryRequest):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/query/stream")
+def execute_query_stream(data: QueryRequest):
+    if not data.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    import json
+    def event_generator():
+        for chunk in rag_engine.stream_query_rag(data.query, collection_id=data.collection_id, top_k=data.top_k or 4):
+            yield f"data: {json.dumps(chunk)}\n\n"
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/api/history")
 def get_history(limit: int = 15):

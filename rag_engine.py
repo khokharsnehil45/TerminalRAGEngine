@@ -280,3 +280,94 @@ Detailed & Accurate Answer (citing document sources):"""
         "latency": latency,
         "model_used": f"{llm_provider}:{model_name}"
     }
+
+def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, config: Optional[Dict[str, Any]] = None):
+    """
+    Generator that yields JSON chunks for server-sent events (SSE) and live terminal streaming.
+    Yields:
+      {"type": "sources", "sources": [...]}
+      {"type": "token", "token": "..."}
+      {"type": "done", "latency": float, "model": str}
+    """
+    cfg = config or load_config()
+    import time
+    start_t = time.time()
+    
+    # 1. Embed query & retrieve context
+    q_vec = get_embedding(query_str, cfg)
+    sources = db.search_similar_chunks(q_vec, collection_id=collection_id, top_k=top_k)
+    
+    yield {"type": "sources", "sources": sources}
+    
+    if not sources:
+        context_block = "No relevant context found in the local knowledge base."
+    else:
+        context_parts = [f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}" for s in sources]
+        context_block = "\n\n---\n\n".join(context_parts)
+        
+    system_prompt = (
+        "You are TRAG (Terminal RAG Engine), an expert offline AI intelligence. "
+        "Answer the user's question accurately using ONLY the provided document context below. "
+        "If the answer cannot be found in the context, explicitly state that the documents do not contain this information. "
+        "Always cite the source document name when providing factual answers."
+    )
+    prompt = f"Context Documents:\n{context_block}\n\nUser Question: {query_str}\n\nDetailed & Accurate Answer (citing document sources):"
+    
+    llm_provider = cfg.get("llm_provider", "ollama")
+    full_response = ""
+    model_name = ""
+    
+    if llm_provider == "ollama":
+        host = cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
+        model_name = cfg.get("ollama_llm_model", "llama3.2:3b")
+        url = f"{host}/api/generate"
+        payload = json.dumps({
+            "model": model_name,
+            "prompt": prompt,
+            "system": system_prompt,
+            "stream": True
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                for line in resp:
+                    if line:
+                        chunk = json.loads(line.decode("utf-8"))
+                        token = chunk.get("response", "")
+                        full_response += token
+                        yield {"type": "token", "token": token}
+        except Exception as e:
+            err_msg = f"\n❌ Ollama Stream Error: {e}"
+            full_response += err_msg
+            yield {"type": "token", "token": err_msg}
+            
+    elif llm_provider == "gemini":
+        api_key = cfg.get("gemini_api_key", "").strip()
+        model_name = cfg.get("gemini_model", "gemini-2.5-flash")
+        if not api_key:
+            err_msg = "❌ Gemini API Key is missing."
+            full_response += err_msg
+            yield {"type": "token", "token": err_msg}
+        else:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?key={api_key}"
+            payload = json.dumps({
+                "contents": [{"parts": [{"text": f"{system_prompt}\n\n{prompt}"}]}]
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    raw = resp.read().decode("utf-8")
+                    data = json.loads(raw)
+                    for item in data:
+                        token = item["candidates"][0]["content"]["parts"][0]["text"]
+                        full_response += token
+                        yield {"type": "token", "token": token}
+            except Exception as e:
+                err_msg = f"❌ Gemini Error: {e}"
+                full_response += err_msg
+                yield {"type": "token", "token": err_msg}
+
+    latency = time.time() - start_t
+    db.log_query(query_str, full_response, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
+    yield {"type": "done", "latency": latency, "model": f"{llm_provider}:{model_name}"}

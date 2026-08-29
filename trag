@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 # TRAG Launcher script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
-python3 "$SCRIPT_DIR/trag.py" "$@"
+APP_DIR="/home/kevin/TerminalRAGEngine"
+export PYTHONPATH="$APP_DIR:$PYTHONPATH"
+python3 "$APP_DIR/trag.py" "$@"
