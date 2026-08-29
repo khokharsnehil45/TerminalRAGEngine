@@ -140,6 +140,22 @@ def save_config(cfg: Dict[str, Any]):
     rag_engine.save_config(cfg)
     return {"success": True}
 
+@app.get("/healthz")
+def health_check():
+    cfg = rag_engine.load_config()
+    colls = db.get_collections()
+    docs = db.get_documents()
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "engine": "TRAG-Production",
+        "llm_provider": cfg.get("llm_provider"),
+        "embedding_model": cfg.get("embedding_model"),
+        "collections_count": len(colls),
+        "total_documents": len(docs),
+        "database": str(db.DB_PATH)
+    }
+
 # Serve SPA
 @app.get("/")
 def serve_index():

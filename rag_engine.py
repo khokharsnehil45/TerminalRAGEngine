@@ -265,31 +265,84 @@ def ingest_file(file_path: Path, collection_id: int, config: Optional[Dict[str, 
 # RAG RETRIEVAL & SYNTHESIS
 # ==========================================
 
+def calculate_retrieval_confidence(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Calculates production-grade confidence score (0-100%) and groundedness tier.
+    Evaluates highest cosine similarity and top-k RRF distribution.
+    """
+    if not sources:
+        return {"confidence_pct": 0.0, "tier": "LOW", "is_grounded": False, "reason": "No relevant document chunks found"}
+        
+    top_sim = max([s.get("similarity_score", 0.0) for s in sources])
+    top_rrf = max([s.get("rrf_score", 0.0) for s in sources])
+    
+    # Normalized score on a 0-100% scale
+    # Base similarity >= 0.65 is high confidence
+    confidence_pct = min(100.0, max(5.0, (top_sim * 100.0) if top_sim > 0 else (top_rrf * 3000.0)))
+    
+    if confidence_pct >= 60.0:
+        tier = "HIGH"
+        is_grounded = True
+    elif confidence_pct >= 38.0:
+        tier = "MEDIUM"
+        is_grounded = True
+    else:
+        tier = "LOW"
+        is_grounded = False
+        
+    return {
+        "confidence_pct": round(confidence_pct, 1),
+        "tier": tier,
+        "is_grounded": is_grounded,
+        "top_similarity": round(top_sim, 3),
+        "top_rrf": round(top_rrf, 4)
+    }
+
 def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, session_id: Optional[int] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cfg = config or load_config()
     import time
-    start_t = time.time()
+    t0 = time.time()
     
     # 1. Embed query
+    t_emb_start = time.time()
     q_vec = get_embedding(query_str, cfg)
+    emb_time_ms = (time.time() - t_emb_start) * 1000
     
     # 2. Retrieve top-k context chunks using Hybrid BM25 + Vector Fusion
+    t_ret_start = time.time()
     sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
+    ret_time_ms = (time.time() - t_ret_start) * 1000
     
-    if not sources:
-        context_block = "No relevant context found in the local knowledge base."
-    else:
-        context_parts = []
-        for s in sources:
-            context_parts.append(f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}")
-        context_block = "\n\n---\n\n".join(context_parts)
+    confidence = calculate_retrieval_confidence(sources)
+    
+    # Guardrail Check: If confidence is critically low and not conversational follow-up
+    if not sources or (confidence["tier"] == "LOW" and not session_id):
+        guardrail_response = (
+            f"⚠️ **Insufficient Context in Knowledge Base**\n\n"
+            f"TRAG's production guardrail detected a low retrieval affinity ({confidence['confidence_pct']}%). "
+            f"The active knowledge base does not contain verified factual documents matching *\"{query_str}\"*. "
+            f"Please ingest relevant files or rephrase your query."
+        )
+        latency = time.time() - t0
+        return {
+            "query": query_str,
+            "response": guardrail_response,
+            "sources": sources,
+            "latency": latency,
+            "confidence": confidence,
+            "model_used": "Guardrail-Grounded",
+            "telemetry": {"emb_ms": round(emb_time_ms, 1), "ret_ms": round(ret_time_ms, 1), "total_ms": round(latency * 1000, 1)},
+            "session_id": session_id
+        }
+        
+    context_parts = [f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}" for s in sources]
+    context_block = "\n\n---\n\n".join(context_parts)
         
     # 3. Format Multi-Turn Conversation History
     history_block = ""
     if session_id:
         past_msgs = db.get_session_messages(session_id)
         if past_msgs:
-            # Include recent 6 exchanges (12 messages)
             recent_turns = past_msgs[-12:]
             history_lines = []
             for m in recent_turns:
@@ -297,13 +350,14 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
                 history_lines.append(f"{role_label}: {m['content']}")
             history_block = "### Prior Conversation History:\n" + "\n".join(history_lines) + "\n\n"
 
-    # 4. Generate Augmented Prompt
+    # 4. Generate Augmented Prompt with Guardrail Grounding
     system_prompt = (
-        "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
-        "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
-        "Maintain conversational context from prior dialogue turns. "
-        "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
-        "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
+        "You are TRAG (Terminal RAG Engine), a production-grade offline document & tabular data intelligence. "
+        "Strictly adhere to these guardrail instructions:\n"
+        "1. Answer using ONLY facts directly substantiated by the provided Context Documents.\n"
+        "2. Do NOT extrapolate, hallucinate, or assume facts not present in the sources.\n"
+        "3. Always cite the exact source document name (e.g. [Source: filename.pdf]).\n"
+        "4. If a fact cannot be determined from the context, explicitly state that it is not documented."
     )
     
     prompt = f"""### Context Documents & Tabular Datasets:
@@ -319,6 +373,7 @@ Detailed, direct & accurate answer:"""
     response_text = ""
     model_name = ""
     
+    t_llm_start = time.time()
     if llm_provider == "ollama":
         host = cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
         model_name = cfg.get("ollama_llm_model", "llama3.2:3b")
@@ -357,9 +412,10 @@ Detailed, direct & accurate answer:"""
             except Exception as e:
                 response_text = f"❌ Gemini API Error: {e}"
                 
-    latency = time.time() - start_t
+    latency = time.time() - t0
+    llm_time_ms = (time.time() - t_llm_start) * 1000
     
-    # Save to session message history if session_id provided
+    # Save to session message history
     if session_id:
         db.add_message(session_id, "user", query_str)
         db.add_message(session_id, "assistant", response_text, sources=sources, model_used=f"{llm_provider}:{model_name}", latency=latency)
@@ -371,29 +427,53 @@ Detailed, direct & accurate answer:"""
         "response": response_text,
         "sources": sources,
         "latency": latency,
+        "confidence": confidence,
         "model_used": f"{llm_provider}:{model_name}",
+        "telemetry": {"emb_ms": round(emb_time_ms, 1), "ret_ms": round(ret_time_ms, 1), "llm_ms": round(llm_time_ms, 1), "total_ms": round(latency * 1000, 1)},
         "session_id": session_id
     }
 
 def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, session_id: Optional[int] = None, config: Optional[Dict[str, Any]] = None):
     """
-    Generator that yields JSON chunks for server-sent events (SSE) and live terminal streaming with Multi-Turn Memory.
+    Generator yielding Server-Sent Events with Production Confidence & Latency Telemetry.
     """
     cfg = config or load_config()
     import time
-    start_t = time.time()
+    t0 = time.time()
     
     # 1. Embed query & retrieve context via Hybrid BM25 + Vector RRF
+    t_emb = time.time()
     q_vec = get_embedding(query_str, cfg)
+    emb_ms = (time.time() - t_emb) * 1000
+    
+    t_ret = time.time()
     sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
+    ret_ms = (time.time() - t_ret) * 1000
     
-    yield {"type": "sources", "sources": sources}
+    confidence = calculate_retrieval_confidence(sources)
+    yield {"type": "sources", "sources": sources, "confidence": confidence}
     
-    if not sources:
-        context_block = "No relevant context found in the local knowledge base."
-    else:
-        context_parts = [f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}" for s in sources]
-        context_block = "\n\n---\n\n".join(context_parts)
+    # Guardrail Check
+    if not sources or (confidence["tier"] == "LOW" and not session_id):
+        guard_msg = (
+            f"⚠️ **Insufficient Context in Knowledge Base**\n\n"
+            f"TRAG's production guardrail detected low retrieval confidence ({confidence['confidence_pct']}%). "
+            f"The documents do not contain verified information matching this query."
+        )
+        yield {"type": "token", "token": guard_msg}
+        latency = time.time() - t0
+        yield {
+            "type": "done",
+            "latency": latency,
+            "confidence": confidence,
+            "model": "Guardrail-Grounded",
+            "telemetry": {"emb_ms": round(emb_ms, 1), "ret_ms": round(ret_ms, 1), "total_ms": round(latency * 1000, 1)},
+            "session_id": session_id
+        }
+        return
+
+    context_parts = [f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}" for s in sources]
+    context_block = "\n\n---\n\n".join(context_parts)
         
     # 2. Format Multi-Turn Conversation History
     history_block = ""
@@ -408,11 +488,8 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
             history_block = "### Prior Conversation History:\n" + "\n".join(history_lines) + "\n\n"
 
     system_prompt = (
-        "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
-        "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
-        "Maintain conversational context from prior dialogue turns. "
-        "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
-        "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
+        "You are TRAG (Terminal RAG Engine), a production-grade offline document & tabular data intelligence. "
+        "Strictly answer using ONLY facts verified in the provided Context Documents. Do NOT hallucinate. Always cite document names."
     )
     prompt = f"### Context Documents & Tabular Datasets:\n{context_block}\n\n{history_block}### User Question:\n{query_str}\n\nDetailed, direct & accurate answer:"
     
@@ -420,6 +497,7 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
     full_response = ""
     model_name = ""
     
+    t_llm = time.time()
     if llm_provider == "ollama":
         host = cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
         model_name = cfg.get("ollama_llm_model", "llama3.2:3b")
@@ -471,7 +549,8 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
                 full_response += err_msg
                 yield {"type": "token", "token": err_msg}
 
-    latency = time.time() - start_t
+    latency = time.time() - t0
+    llm_ms = (time.time() - t_llm) * 1000
     
     if session_id:
         db.add_message(session_id, "user", query_str)
@@ -479,4 +558,11 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
     else:
         db.log_query(query_str, full_response, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
         
-    yield {"type": "done", "latency": latency, "model": f"{llm_provider}:{model_name}", "session_id": session_id}
+    yield {
+        "type": "done",
+        "latency": latency,
+        "confidence": confidence,
+        "model": f"{llm_provider}:{model_name}",
+        "telemetry": {"emb_ms": round(emb_ms, 1), "ret_ms": round(ret_ms, 1), "llm_ms": round(llm_ms, 1), "total_ms": round(latency * 1000, 1)},
+        "session_id": session_id
+    }

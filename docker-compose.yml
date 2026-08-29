@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # TRAG Main Application & Web GUI
+  trag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trag-engine
+    restart: unless-stopped
+    ports:
+      - "8450:8450"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - PORT=8450
+    volumes:
+      # Persist SQLite vector database and uploaded documents
+      - trag_db:/root
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    networks:
+      - trag-network
+
+  # Optional Embedded Local Ollama Engine
+  ollama:
+    image: ollama/ollama:latest
+    container_name: trag-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - trag-network
+
+volumes:
+  trag_db:
+    driver: local
+  ollama_models:
+    driver: local
+
+networks:
+  trag-network:
+    driver: bridge

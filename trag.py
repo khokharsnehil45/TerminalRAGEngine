@@ -139,10 +139,13 @@ def action_query_rag():
         model_used = "TRAG AI"
         
         try:
+            confidence = {}
+            telemetry = {}
             console.print("[bold green]TRAG Answer:[/bold green] ", end="")
             for chunk in rag_engine.stream_query_rag(query_str.strip(), collection_id=ACTIVE_COLLECTION["id"], top_k=4, session_id=session_id):
                 if chunk["type"] == "sources":
                     sources = chunk.get("sources", [])
+                    confidence = chunk.get("confidence", {})
                 elif chunk["type"] == "token":
                     token = chunk["token"]
                     full_text += token
@@ -150,8 +153,18 @@ def action_query_rag():
                 elif chunk["type"] == "done":
                     latency = chunk["latency"]
                     model_used = chunk["model"]
+                    confidence = chunk.get("confidence", confidence)
+                    telemetry = chunk.get("telemetry", {})
             console.print("\n")
-            console.print(f"[dim yellow]⏱️ Latency: {latency:.2f}s | Model: {model_used} | Session #{session_id}[/dim yellow]\n")
+            
+            # Print Production Telemetry Card
+            conf_tier = confidence.get("tier", "UNKNOWN")
+            conf_pct = confidence.get("confidence_pct", 0.0)
+            conf_color = "green" if conf_tier == "HIGH" else ("yellow" if conf_tier == "MEDIUM" else "red")
+            
+            telemetry_str = f"⏱️ Latency: {latency:.2f}s (Emb: {telemetry.get('emb_ms', 0)}ms | Ret: {telemetry.get('ret_ms', 0)}ms | LLM: {telemetry.get('llm_ms', 0)}ms)"
+            badge_str = f"[{conf_color}]🛡️ Grounded Confidence: {conf_pct}% [{conf_tier}][/{conf_color}]"
+            console.print(f"[dim]{telemetry_str} • {badge_str} • Model: {model_used}[/dim]\n")
         except Exception as e:
             console.print(f"\n[bold red]❌ RAG Error:[/bold red] {e}\n")
             continue
