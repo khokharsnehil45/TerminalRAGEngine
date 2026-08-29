@@ -41,14 +41,85 @@ def save_config(cfg: Dict[str, Any]):
         json.dump(cfg, f, indent=2)
 
 # ==========================================
-# DOCUMENT EXTRACTION
+# DOCUMENT & TABULAR EXTRACTION
 # ==========================================
 
+import csv
+import pandas as pd
+
 def extract_text_from_file(file_path: Path) -> Tuple[str, str]:
-    """Returns (extracted_text, file_type)"""
+    """Returns (extracted_text, file_type) with dedicated tabular format handling."""
     suffix = file_path.suffix.lower()
     
-    if suffix == ".pdf":
+    # 1. Tabular: CSV / TSV
+    if suffix in [".csv", ".tsv"]:
+        try:
+            sep = "\t" if suffix == ".tsv" else ","
+            df = pd.read_csv(str(file_path), sep=sep, low_memory=False)
+            
+            # Format row-by-row semantic representation
+            text = f"Dataset: {file_path.name}\nTotal Rows: {len(df)} | Columns: {', '.join(df.columns.astype(str))}\n\n"
+            
+            # Markdown table summary overview
+            text += "### Summary Sample Table:\n"
+            text += df.head(10).to_markdown(index=False) + "\n\n"
+            
+            # Semantic record-by-record representation
+            text += "### Itemized Records:\n"
+            for idx, row in df.iterrows():
+                row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                text += f"[Row {idx + 1}] {row_str}\n"
+                
+            return text.strip(), "csv"
+        except Exception as e:
+            raise RuntimeError(f"Failed to read tabular file {file_path.name}: {e}")
+
+    # 2. Tabular: Excel (XLSX / XLS)
+    elif suffix in [".xlsx", ".xls"]:
+        try:
+            excel = pd.ExcelFile(str(file_path))
+            text = f"Excel Workbook: {file_path.name}\nSheets: {', '.join(excel.sheet_names)}\n\n"
+            
+            for sheet_name in excel.sheet_names:
+                df = excel.parse(sheet_name)
+                text += f"## Sheet: {sheet_name} ({len(df)} rows)\n"
+                text += f"Columns: {', '.join(df.columns.astype(str))}\n\n"
+                
+                # Sample table
+                if not df.empty:
+                    text += df.head(8).to_markdown(index=False) + "\n\n"
+                    text += "### Rows:\n"
+                    for idx, row in df.iterrows():
+                        row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                        text += f"[{sheet_name} - Row {idx + 1}] {row_str}\n"
+                text += "\n---\n\n"
+                
+            return text.strip(), "excel"
+        except Exception as e:
+            raise RuntimeError(f"Failed to read Excel spreadsheet {file_path.name}: {e}")
+
+    # 3. Tabular: JSON Array or Object
+    elif suffix == ".json":
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = json.load(f)
+                
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                df = pd.DataFrame(data)
+                text = f"JSON Dataset: {file_path.name} ({len(df)} records)\n\n"
+                text += df.head(10).to_markdown(index=False) + "\n\n"
+                text += "### Structured Entries:\n"
+                for idx, row in df.iterrows():
+                    row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                    text += f"[Entry {idx + 1}] {row_str}\n"
+                return text.strip(), "json_table"
+            else:
+                return json.dumps(data, indent=2), "json"
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse JSON file {file_path.name}: {e}")
+
+    # 4. PDF Documents
+    elif suffix == ".pdf":
         text = ""
         try:
             reader = pypdf.PdfReader(str(file_path))
@@ -60,6 +131,7 @@ def extract_text_from_file(file_path: Path) -> Tuple[str, str]:
         except Exception as e:
             raise RuntimeError(f"Failed to read PDF {file_path.name}: {e}")
             
+    # 5. Plain Text, Markdown & Code
     else:
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -214,18 +286,19 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
         
     # 3. Generate Augmented Prompt
     system_prompt = (
-        "You are TRAG (Terminal RAG Engine), an expert offline AI intelligence. "
-        "Answer the user's question accurately using ONLY the provided document context below. "
-        "If the answer cannot be found in the context, explicitly state that the documents do not contain this information. "
-        "Always cite the source document name when providing factual answers."
+        "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
+        "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
+        "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
+        "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
     )
     
-    prompt = f"""Context Documents:
+    prompt = f"""### Context Documents & Tabular Datasets:
 {context_block}
 
-User Question: {query_str}
+### User Question:
+{query_str}
 
-Detailed & Accurate Answer (citing document sources):"""
+Detailed, direct & accurate answer:"""
 
     # 4. Invoke LLM (Ollama or Gemini)
     llm_provider = cfg.get("llm_provider", "ollama")
@@ -306,12 +379,12 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
         context_block = "\n\n---\n\n".join(context_parts)
         
     system_prompt = (
-        "You are TRAG (Terminal RAG Engine), an expert offline AI intelligence. "
-        "Answer the user's question accurately using ONLY the provided document context below. "
-        "If the answer cannot be found in the context, explicitly state that the documents do not contain this information. "
-        "Always cite the source document name when providing factual answers."
+        "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
+        "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
+        "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
+        "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
     )
-    prompt = f"Context Documents:\n{context_block}\n\nUser Question: {query_str}\n\nDetailed & Accurate Answer (citing document sources):"
+    prompt = f"### Context Documents & Tabular Datasets:\n{context_block}\n\n### User Question:\n{query_str}\n\nDetailed, direct & accurate answer:"
     
     llm_provider = cfg.get("llm_provider", "ollama")
     full_response = ""

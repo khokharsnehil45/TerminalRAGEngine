@@ -1,0 +1,5 @@
+Transaction_ID,Customer,Product,Category,Amount_INR,Status
+TX1001,Rohan Sharma,MacBook Pro M3,Laptops,169900,Delivered
+TX1002,Priya Patel,Dell XPS 15,Laptops,145000,Shipped
+TX1003,Amit Verma,Sony WH-1000XM5,Audio,26990,Delivered
+TX1004,Sneha Reddy,iPad Air 256GB,Tablets,69900,Processing
