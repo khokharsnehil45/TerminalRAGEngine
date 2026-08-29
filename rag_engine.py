@@ -265,7 +265,7 @@ def ingest_file(file_path: Path, collection_id: int, config: Optional[Dict[str, 
 # RAG RETRIEVAL & SYNTHESIS
 # ==========================================
 
-def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, session_id: Optional[int] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cfg = config or load_config()
     import time
     start_t = time.time()
@@ -284,10 +284,24 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
             context_parts.append(f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}")
         context_block = "\n\n---\n\n".join(context_parts)
         
-    # 3. Generate Augmented Prompt
+    # 3. Format Multi-Turn Conversation History
+    history_block = ""
+    if session_id:
+        past_msgs = db.get_session_messages(session_id)
+        if past_msgs:
+            # Include recent 6 exchanges (12 messages)
+            recent_turns = past_msgs[-12:]
+            history_lines = []
+            for m in recent_turns:
+                role_label = "User" if m["role"] == "user" else "Assistant"
+                history_lines.append(f"{role_label}: {m['content']}")
+            history_block = "### Prior Conversation History:\n" + "\n".join(history_lines) + "\n\n"
+
+    # 4. Generate Augmented Prompt
     system_prompt = (
         "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
         "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
+        "Maintain conversational context from prior dialogue turns. "
         "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
         "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
     )
@@ -295,12 +309,12 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
     prompt = f"""### Context Documents & Tabular Datasets:
 {context_block}
 
-### User Question:
+{history_block}### User Question:
 {query_str}
 
 Detailed, direct & accurate answer:"""
 
-    # 4. Invoke LLM (Ollama or Gemini)
+    # 5. Invoke LLM (Ollama or Gemini)
     llm_provider = cfg.get("llm_provider", "ollama")
     response_text = ""
     model_name = ""
@@ -344,23 +358,26 @@ Detailed, direct & accurate answer:"""
                 response_text = f"❌ Gemini API Error: {e}"
                 
     latency = time.time() - start_t
-    db.log_query(query_str, response_text, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
+    
+    # Save to session message history if session_id provided
+    if session_id:
+        db.add_message(session_id, "user", query_str)
+        db.add_message(session_id, "assistant", response_text, sources=sources, model_used=f"{llm_provider}:{model_name}", latency=latency)
+    else:
+        db.log_query(query_str, response_text, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
     
     return {
         "query": query_str,
         "response": response_text,
         "sources": sources,
         "latency": latency,
-        "model_used": f"{llm_provider}:{model_name}"
+        "model_used": f"{llm_provider}:{model_name}",
+        "session_id": session_id
     }
 
-def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, config: Optional[Dict[str, Any]] = None):
+def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, session_id: Optional[int] = None, config: Optional[Dict[str, Any]] = None):
     """
-    Generator that yields JSON chunks for server-sent events (SSE) and live terminal streaming.
-    Yields:
-      {"type": "sources", "sources": [...]}
-      {"type": "token", "token": "..."}
-      {"type": "done", "latency": float, "model": str}
+    Generator that yields JSON chunks for server-sent events (SSE) and live terminal streaming with Multi-Turn Memory.
     """
     cfg = config or load_config()
     import time
@@ -378,13 +395,26 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
         context_parts = [f"[Source: {s['filename']} (Score: {s['similarity_score']:.2f})]\n{s['content']}" for s in sources]
         context_block = "\n\n---\n\n".join(context_parts)
         
+    # 2. Format Multi-Turn Conversation History
+    history_block = ""
+    if session_id:
+        past_msgs = db.get_session_messages(session_id)
+        if past_msgs:
+            recent_turns = past_msgs[-12:]
+            history_lines = []
+            for m in recent_turns:
+                role_label = "User" if m["role"] == "user" else "Assistant"
+                history_lines.append(f"{role_label}: {m['content']}")
+            history_block = "### Prior Conversation History:\n" + "\n".join(history_lines) + "\n\n"
+
     system_prompt = (
         "You are TRAG (Terminal RAG Engine), an expert offline document and tabular data intelligence. "
         "Analyze the provided document passages and structured datasets (spreadsheets, tables, records, PDFs, code). "
+        "Maintain conversational context from prior dialogue turns. "
         "Extract specific factual values, numbers, names, rows, and relationships accurately from the context. "
         "Always cite the source document name when answering. If the context does not contain the answer, state that clearly."
     )
-    prompt = f"### Context Documents & Tabular Datasets:\n{context_block}\n\n### User Question:\n{query_str}\n\nDetailed, direct & accurate answer:"
+    prompt = f"### Context Documents & Tabular Datasets:\n{context_block}\n\n{history_block}### User Question:\n{query_str}\n\nDetailed, direct & accurate answer:"
     
     llm_provider = cfg.get("llm_provider", "ollama")
     full_response = ""
@@ -442,5 +472,11 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
                 yield {"type": "token", "token": err_msg}
 
     latency = time.time() - start_t
-    db.log_query(query_str, full_response, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
-    yield {"type": "done", "latency": latency, "model": f"{llm_provider}:{model_name}"}
+    
+    if session_id:
+        db.add_message(session_id, "user", query_str)
+        db.add_message(session_id, "assistant", full_response, sources=sources, model_used=f"{llm_provider}:{model_name}", latency=latency)
+    else:
+        db.log_query(query_str, full_response, f"{llm_provider}:{model_name}", sources, latency, collection_id=collection_id)
+        
+    yield {"type": "done", "latency": latency, "model": f"{llm_provider}:{model_name}", "session_id": session_id}

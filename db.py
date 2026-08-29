@@ -58,7 +58,32 @@ def init_db(db_path: Path = DB_PATH):
     )
     """)
     
-    # 4. Query & Chat History
+    # 4. Chat Sessions & Multi-Turn Message History
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        collection_id INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        role TEXT NOT NULL, -- 'user' or 'assistant'
+        content TEXT NOT NULL,
+        sources TEXT,       -- JSON array of cited sources
+        model_used TEXT,
+        latency_seconds REAL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    )
+    """)
+
+    # 5. Query Log History (legacy log)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS queries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +91,7 @@ def init_db(db_path: Path = DB_PATH):
         query TEXT NOT NULL,
         response TEXT NOT NULL,
         model_used TEXT,
-        sources TEXT, -- JSON array of chunk references
+        sources TEXT,
         latency_seconds REAL,
         created_at TEXT NOT NULL
     )
@@ -306,6 +331,77 @@ def search_hybrid_chunks(query_str: str, query_vector: List[float], collection_i
 def search_similar_chunks(query_vector: List[float], collection_id: Optional[int] = None, top_k: int = 4, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
     """Legacy vector-only search fallback."""
     return search_hybrid_chunks("", query_vector, collection_id=collection_id, top_k=top_k, db_path=db_path)
+
+# ==========================================
+# MULTI-TURN CHAT SESSIONS & CONVERSATION HISTORY
+# ==========================================
+
+def create_session(title: str, collection_id: int = 1, db_path: Path = DB_PATH) -> int:
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute(
+        "INSERT INTO sessions (title, collection_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (title.strip(), collection_id, now, now)
+    )
+    sid = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return sid
+
+def get_sessions(collection_id: Optional[int] = None, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    if collection_id:
+        cursor.execute("""
+            SELECT s.*, 
+                   (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count 
+            FROM sessions s WHERE s.collection_id = ? ORDER BY s.updated_at DESC
+        """, (collection_id,))
+    else:
+        cursor.execute("""
+            SELECT s.*, 
+                   (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count 
+            FROM sessions s ORDER BY s.updated_at DESC
+        """)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def get_session_messages(session_id: int, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def add_message(session_id: int, role: str, content: str, sources: Optional[List[Dict[str, Any]]] = None, model_used: Optional[str] = None, latency: Optional[float] = None, db_path: Path = DB_PATH) -> int:
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    sources_json = json.dumps(sources) if sources else None
+    cursor.execute(
+        "INSERT INTO messages (session_id, role, content, sources, model_used, latency_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, role, content, sources_json, model_used, latency, now)
+    )
+    msg_id = cursor.lastrowid
+    cursor.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+    conn.commit()
+    conn.close()
+    return msg_id
+
+def delete_session(session_id: int, db_path: Path = DB_PATH) -> bool:
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+    cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
 
 # ==========================================
 # QUERY HISTORY

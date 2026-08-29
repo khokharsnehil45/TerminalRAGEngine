@@ -86,14 +86,51 @@ def action_query_rag():
     console.clear()
     render_banner()
     print_wizard_box(
-        f"💬 Interactive RAG Document Chat — [{ACTIVE_COLLECTION['name']}]",
-        "Ask questions grounded in your local vector embeddings with source citations."
+        f"💬 Interactive Multi-Turn RAG Chat — [{ACTIVE_COLLECTION['name']}]",
+        "Continuous dialogue with contextual memory & source grounding. Type 'clear' to reset or 'exit' to return."
     )
     
+    # Check existing sessions
+    existing_sessions = db.get_sessions(collection_id=ACTIVE_COLLECTION["id"])
+    choices = [
+        questionary.Choice("✨ Start Brand New Chat Session", value=("new", None))
+    ]
+    for s in existing_sessions[:6]:
+        choices.append(questionary.Choice(
+            f"📜 Resume: {s['title']} ({s['message_count']} msgs • {s['updated_at'][:16].replace('T', ' ')})",
+            value=("resume", s)
+        ))
+    choices.append(questionary.Choice("🔙 Back to Main Menu", value=("back", None)))
+    
+    session_pick = questionary.select("Choose Chat Session:", choices=choices, style=CUSTOM_STYLE).ask()
+    if not session_pick or session_pick[0] == "back":
+        return
+        
+    session_id = None
+    if session_pick[0] == "new":
+        title = questionary.text("Enter Session Topic / Title (optional):", default="New Research Session", style=CUSTOM_STYLE).ask()
+        session_id = db.create_session(title or "Research Session", collection_id=ACTIVE_COLLECTION["id"])
+    else:
+        session_id = session_pick[1]["id"]
+        # Print prior messages in session
+        past_msgs = db.get_session_messages(session_id)
+        if past_msgs:
+            console.print("\n[dim]─── Previous Session Context ───[/dim]")
+            for m in past_msgs:
+                if m["role"] == "user":
+                    console.print(f"[bold cyan]You:[/bold cyan] {m['content']}")
+                else:
+                    console.print(f"[bold green]TRAG:[/bold green] {m['content'][:250]}{'...' if len(m['content'])>250 else ''}\n")
+            console.print("[dim]────────────────────────────────[/dim]\n")
+
     while True:
-        query_str = questionary.text("Enter your question (or 'back' to return):", style=CUSTOM_STYLE).ask()
-        if not query_str or query_str.strip().lower() in ["back", "exit", "q"]:
+        query_str = questionary.text("💬 You:", style=CUSTOM_STYLE).ask()
+        if not query_str or query_str.strip().lower() in ["back", "exit", "q", "quit"]:
             return
+        elif query_str.strip().lower() == "clear":
+            session_id = db.create_session("New Research Session", collection_id=ACTIVE_COLLECTION["id"])
+            console.print("\n[bold green]✓ Memory reset! New session started.[/bold green]\n")
+            continue
             
         console.print("\n[bold cyan]🧠 Querying vector database & streaming answer...[/bold cyan]\n")
         sources = []
@@ -103,7 +140,7 @@ def action_query_rag():
         
         try:
             console.print("[bold green]TRAG Answer:[/bold green] ", end="")
-            for chunk in rag_engine.stream_query_rag(query_str.strip(), collection_id=ACTIVE_COLLECTION["id"], top_k=4):
+            for chunk in rag_engine.stream_query_rag(query_str.strip(), collection_id=ACTIVE_COLLECTION["id"], top_k=4, session_id=session_id):
                 if chunk["type"] == "sources":
                     sources = chunk.get("sources", [])
                 elif chunk["type"] == "token":
@@ -114,7 +151,7 @@ def action_query_rag():
                     latency = chunk["latency"]
                     model_used = chunk["model"]
             console.print("\n")
-            console.print(f"[dim yellow]⏱️ Latency: {latency:.2f}s | Model: {model_used}[/dim yellow]\n")
+            console.print(f"[dim yellow]⏱️ Latency: {latency:.2f}s | Model: {model_used} | Session #{session_id}[/dim yellow]\n")
         except Exception as e:
             console.print(f"\n[bold red]❌ RAG Error:[/bold red] {e}\n")
             continue

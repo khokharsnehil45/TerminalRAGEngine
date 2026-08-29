@@ -30,12 +30,37 @@ class CollectionCreate(BaseModel):
     name: str
     description: Optional[str] = ""
 
+class SessionCreate(BaseModel):
+    title: str
+    collection_id: Optional[int] = 1
+
 class QueryRequest(BaseModel):
     query: str
     collection_id: Optional[int] = None
     top_k: Optional[int] = 4
+    session_id: Optional[int] = None
 
 # API Endpoints
+@app.get("/api/sessions")
+def list_sessions(collection_id: Optional[int] = None):
+    return db.get_sessions(collection_id=collection_id)
+
+@app.post("/api/sessions")
+def create_session(data: SessionCreate):
+    sid = db.create_session(data.title, collection_id=data.collection_id or 1)
+    return {"success": True, "id": sid, "title": data.title}
+
+@app.get("/api/sessions/{sid}/messages")
+def get_session_messages(sid: int):
+    return db.get_session_messages(sid)
+
+@app.delete("/api/sessions/{sid}")
+def delete_session(sid: int):
+    success = db.delete_session(sid)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True}
+
 @app.get("/api/collections")
 def list_collections():
     return db.get_collections()
@@ -86,7 +111,7 @@ def execute_query(data: QueryRequest):
     if not data.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     try:
-        res = rag_engine.query_rag(data.query, collection_id=data.collection_id, top_k=data.top_k or 4)
+        res = rag_engine.query_rag(data.query, collection_id=data.collection_id, top_k=data.top_k or 4, session_id=data.session_id)
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -97,7 +122,7 @@ def execute_query_stream(data: QueryRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     import json
     def event_generator():
-        for chunk in rag_engine.stream_query_rag(data.query, collection_id=data.collection_id, top_k=data.top_k or 4):
+        for chunk in rag_engine.stream_query_rag(data.query, collection_id=data.collection_id, top_k=data.top_k or 4, session_id=data.session_id):
             yield f"data: {json.dumps(chunk)}\n\n"
             
     return StreamingResponse(event_generator(), media_type="text/event-stream")
