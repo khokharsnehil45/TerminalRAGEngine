@@ -39,7 +39,7 @@ CUSTOM_STYLE = Style([
 ACTIVE_COLLECTION = {"id": 1, "name": "default"}
 
 def render_banner(subtitle: str = "⚡ Local Retrieval-Augmented Generation & Vector Intelligence ⚡"):
-    """Renders the retro 3D-styled TRAG banner with Cyberpunk Cyan & Electric Neon gradient."""
+    """Renders the retro 3D-styled TRAG banner with Emerald Matrix gradient."""
     banner_lines = [
         r"████████╗██████╗  █████╗  ██████╗ ",
         r"╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ ",
@@ -50,29 +50,29 @@ def render_banner(subtitle: str = "⚡ Local Retrieval-Augmented Generation & Ve
     ]
     
     banner_text = Text()
-    # Cyberpunk Cyan & Electric Neon Gradient
-    colors = ["#00e5ff", "#38bdf8", "#818cf8", "#a855f7", "#c084fc", "#bd93f9"]
+    # Emerald Matrix Gradient
+    colors = ["#10b981", "#34d399", "#6ee7b7", "#a7f3d0", "#34d399", "#10b981"]
     for i, line in enumerate(banner_lines):
         banner_text.append(line + "\n", style=f"bold {colors[i % len(colors)]}")
         
-    banner_text.append(f"  {subtitle}", style="italic #8be9fd")
+    banner_text.append(f"  {subtitle}", style="italic #6ee7b7")
     
     cfg = rag_engine.load_config()
     provider_str = f"Embedding: {cfg.get('embedding_model', 'nomic-embed-text')} • LLM: {cfg.get('llm_provider', 'ollama')}"
     
     console.print(Panel(
         banner_text,
-        border_style="#00e5ff",
-        subtitle=f"[bold #bd93f9]v1.0.0 • Base: {ACTIVE_COLLECTION['name']} • {provider_str}[/bold #bd93f9]",
+        border_style="#10b981",
+        subtitle=f"[bold #6ee7b7]v1.0.0 • Base: {ACTIVE_COLLECTION['name']} • {provider_str}[/bold #6ee7b7]",
         subtitle_align="right",
         padding=(1, 2)
     ))
 
 def print_wizard_box(title: str, subtitle: str):
     content = Text()
-    content.append(f"{title}\n", style="bold #00e5ff")
-    content.append(f"{subtitle}", style="dim #8be9fd")
-    console.print(Panel(content, border_style="#00e5ff", padding=(0, 1)))
+    content.append(f"{title}\n", style="bold #10b981")
+    content.append(f"{subtitle}", style="dim #6ee7b7")
+    console.print(Panel(content, border_style="#10b981", padding=(0, 1)))
 
 def pause_prompt():
     questionary.press_any_key_to_continue("Press any key to return to the main menu...").ask()
