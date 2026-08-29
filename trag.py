@@ -135,22 +135,142 @@ def action_query_rag():
             
         console.print("\n")
 
+def terminal_file_explorer(start_path: Path = Path.home()) -> Optional[Path]:
+    """Interactive retro terminal file explorer to navigate directories and select files for ingestion."""
+    current_dir = start_path.resolve()
+    
+    # Supported file extensions
+    SUPPORTED_EXTS = {
+        ".pdf": "📕 PDF Document",
+        ".csv": "📊 CSV Spreadsheet",
+        ".xlsx": "📗 Excel Spreadsheet",
+        ".xls": "📗 Excel Spreadsheet",
+        ".tsv": "📊 TSV Data",
+        ".json": "📦 JSON Dataset",
+        ".md": "📝 Markdown Notes",
+        ".txt": "📄 Plain Text",
+        ".py": "🐍 Python Code",
+        ".js": "🟨 JavaScript",
+        ".ts": "🔷 TypeScript",
+        ".rs": "🦀 Rust Code",
+        ".go": "🐹 Go Code",
+        ".cpp": "⚙️ C++ Code",
+        ".c": "⚙️ C Code",
+        ".html": "🌐 HTML Webpage"
+    }
+
+    while True:
+        console.clear()
+        render_banner()
+        print_wizard_box(
+            f"📂 Terminal File Explorer — [{current_dir}]",
+            "Use arrow keys to navigate directories and press Enter on any file to select & ingest."
+        )
+
+        try:
+            entries = sorted(list(current_dir.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except PermissionError:
+            console.print("[bold red]❌ Permission denied accessing this directory.[/bold red]")
+            time.sleep(1.2)
+            current_dir = current_dir.parent
+            continue
+
+        choices = []
+        
+        # Parent directory navigation
+        if current_dir != current_dir.parent:
+            choices.append(questionary.Choice("📁 .. (Go up to parent directory)", value=("dir", current_dir.parent)))
+            
+        # List subdirectories
+        for p in entries:
+            if p.is_dir() and not p.name.startswith('.'):
+                try:
+                    count = len(list(p.iterdir()))
+                    choices.append(questionary.Choice(f"📁 {p.name}/ ({count} items)", value=("dir", p)))
+                except Exception:
+                    choices.append(questionary.Choice(f"📁 {p.name}/", value=("dir", p)))
+
+        # List files
+        file_count = 0
+        for p in entries:
+            if p.is_file() and not p.name.startswith('.'):
+                ext = p.suffix.lower()
+                size_kb = p.stat().st_size / 1024
+                size_str = f"{size_kb:,.1f} KB" if size_kb < 1024 else f"{size_kb/1024:,.1f} MB"
+                
+                if ext in SUPPORTED_EXTS:
+                    icon_label = SUPPORTED_EXTS[ext]
+                    choices.append(questionary.Choice(
+                        f"✨ {icon_label}: {p.name} [{size_str}]",
+                        value=("file", p)
+                    ))
+                    file_count += 1
+                else:
+                    choices.append(questionary.Choice(
+                        f"📄 {p.name} [{size_str}]",
+                        value=("file", p)
+                    ))
+                    file_count += 1
+
+        choices.append(questionary.Separator())
+        choices.append(questionary.Choice("⌨️ Type Custom Path Manually", value=("manual", None)))
+        choices.append(questionary.Choice("🔙 Cancel & Return to Menu", value=("cancel", None)))
+
+        selection = questionary.select(
+            f"Select a file to ingest (Current Directory: {current_dir.name}/):",
+            choices=choices,
+            style=CUSTOM_STYLE
+        ).ask()
+
+        if not selection or selection[0] == "cancel":
+            return None
+        elif selection[0] == "dir":
+            current_dir = selection[1].resolve()
+        elif selection[0] == "file":
+            return selection[1]
+        elif selection[0] == "manual":
+            manual_str = questionary.text("Enter full file path:", style=CUSTOM_STYLE).ask()
+            if manual_str and manual_str.strip():
+                m_path = Path(manual_str.strip()).expanduser()
+                if m_path.exists() and m_path.is_file():
+                    return m_path
+                else:
+                    console.print(f"[bold red]File not found: {m_path}[/bold red]")
+                    time.sleep(1.5)
+
 def action_ingest_document():
     console.clear()
     render_banner()
     print_wizard_box(
         f"📥 Ingest & Embed Document — [{ACTIVE_COLLECTION['name']}]",
-        "Parses PDF, Markdown, Text, or Code files, splits into chunks, and computes embeddings."
+        "Select how you want to locate files for semantic vector ingestion."
     )
     
-    path_str = questionary.text("Enter path to file to ingest (e.g. /home/kevin/notes.pdf):", style=CUSTOM_STYLE).ask()
-    if not path_str or not path_str.strip():
+    method = questionary.select(
+        "Choose Ingestion Method:",
+        choices=[
+            "📂 Launch Interactive Terminal File Explorer (Browse folders & files)",
+            "⌨️ Enter File Path Directly (Type or paste path)",
+            "🔙 Back to Main Menu"
+        ],
+        style=CUSTOM_STYLE
+    ).ask()
+    
+    if not method or "Back" in method:
         return
         
-    target_path = Path(path_str.strip()).expanduser()
-    if not target_path.exists() or not target_path.is_file():
-        console.print(f"\n[bold red]❌ File not found at: {target_path}[/bold red]\n")
-        pause_prompt()
+    target_path = None
+    if "File Explorer" in method:
+        target_path = terminal_file_explorer(start_path=Path.cwd())
+    else:
+        path_str = questionary.text("Enter path to file to ingest (e.g. /home/kevin/data.csv):", style=CUSTOM_STYLE).ask()
+        if path_str and path_str.strip():
+            target_path = Path(path_str.strip()).expanduser()
+
+    if not target_path or not target_path.exists() or not target_path.is_file():
+        if target_path:
+            console.print(f"\n[bold red]❌ File not found at: {target_path}[/bold red]\n")
+            pause_prompt()
         return
 
     with console.status(f"[bold cyan]Parsing and generating vector embeddings for {target_path.name}...[/bold cyan]", spinner="dots"):
@@ -343,7 +463,8 @@ def main():
             "Select TRAG Action: (Use arrow keys)",
             choices=[
                 questionary.Choice("💬  Ask / RAG Chat           — Query your documents with cited vector context", value="query"),
-                questionary.Choice("📥  Ingest & Embed Document — Parse & vectorize PDF, TXT, MD, or Code file", value="ingest"),
+                questionary.Choice("📥  Ingest & Embed Document — Parse & vectorize PDF, CSV, Excel, TXT, MD, Code", value="ingest"),
+                questionary.Choice("📂  Terminal File Explorer  — Interactive folder browser to find & ingest files", value="explorer"),
                 questionary.Choice("📜  View Ingested Documents — Browse files, character counts & vector chunks", value="docs"),
                 questionary.Choice("🗂️   Knowledge Base Manager  — Switch or create domain collections", value="collections"),
                 questionary.Choice("💻  Launch TRAG Web GUI     — Minimalist browser dashboard with chat canvas", value="gui"),
@@ -361,6 +482,17 @@ def main():
             action_query_rag()
         elif choice == "ingest":
             action_ingest_document()
+        elif choice == "explorer":
+            selected = terminal_file_explorer(start_path=Path.cwd())
+            if selected and selected.is_file():
+                with console.status(f"[bold cyan]Parsing and generating vector embeddings for {selected.name}...[/bold cyan]", spinner="dots"):
+                    try:
+                        res = rag_engine.ingest_file(selected, collection_id=ACTIVE_COLLECTION["id"])
+                        console.print(f"\n[bold green]✓ Ingested '{res['filename']}' successfully![/bold green]")
+                        console.print(f"[dim]Total Characters: {res['char_count']:,} | Vector Chunks Created: {res['chunk_count']}[/dim]\n")
+                    except Exception as e:
+                        console.print(f"\n[bold red]❌ Ingestion Failed:[/bold red] {e}\n")
+                pause_prompt()
         elif choice == "docs":
             action_list_documents()
         elif choice == "collections":
