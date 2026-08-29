@@ -191,8 +191,11 @@ def delete_document(doc_id: int, db_path: Path = DB_PATH) -> bool:
     return affected > 0
 
 # ==========================================
-# VECTOR SIMILARITY SEARCH (Cosine Similarity)
+# HYBRID RETRIEVAL (BM25 + Cosine Vector Fusion via RRF)
 # ==========================================
+
+import re
+from rank_bm25 import BM25Okapi
 
 def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     dot = np.dot(vec_a, vec_b)
@@ -202,7 +205,15 @@ def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
         return 0.0
     return float(dot / (norm_a * norm_b))
 
-def search_similar_chunks(query_vector: List[float], collection_id: Optional[int] = None, top_k: int = 4, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+def tokenize_text(text: str) -> List[str]:
+    """Tokenize text into lowercase alphanumeric keywords."""
+    return re.findall(r'\b[a-zA-Z0-9_-]+\b', text.lower())
+
+def search_hybrid_chunks(query_str: str, query_vector: List[float], collection_id: Optional[int] = None, top_k: int = 4, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+    """
+    State-of-the-Art Hybrid Search:
+    Combines BM25 exact keyword matching with Dense Vector Cosine Similarity via Reciprocal Rank Fusion (RRF).
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -212,14 +223,13 @@ def search_similar_chunks(query_vector: List[float], collection_id: Optional[int
             SELECT c.*, d.filename 
             FROM chunks c 
             JOIN documents d ON c.document_id = d.id 
-            WHERE c.collection_id = ? AND c.embedding IS NOT NULL
+            WHERE c.collection_id = ?
         """, (collection_id,))
     else:
         cursor.execute("""
             SELECT c.*, d.filename 
             FROM chunks c 
             JOIN documents d ON c.document_id = d.id 
-            WHERE c.embedding IS NOT NULL
         """)
         
     rows = cursor.fetchall()
@@ -227,25 +237,75 @@ def search_similar_chunks(query_vector: List[float], collection_id: Optional[int
     
     if not rows:
         return []
-        
+
+    # 1. Vector Cosine Similarity Ranking
     q_vec = np.array(query_vector, dtype=np.float32)
-    scored = []
+    vector_scores = []
     
     for r in rows:
-        emb_data = json.loads(r["embedding"])
-        c_vec = np.array(emb_data, dtype=np.float32)
-        score = cosine_similarity(q_vec, c_vec)
-        scored.append({
+        score = 0.0
+        if r["embedding"]:
+            emb_data = json.loads(r["embedding"])
+            c_vec = np.array(emb_data, dtype=np.float32)
+            score = cosine_similarity(q_vec, c_vec)
+        vector_scores.append((r["id"], score, r))
+
+    # Rank by vector score
+    vector_scores.sort(key=lambda x: x[1], reverse=True)
+    vector_rank = {item[0]: rank + 1 for rank, item in enumerate(vector_scores)}
+
+    # 2. BM25 Keyword Search Ranking
+    tokenized_corpus = [tokenize_text(r["content"]) for r in rows]
+    query_tokens = tokenize_text(query_str)
+    
+    bm25_rank = {}
+    if query_tokens and any(tokenized_corpus):
+        try:
+            bm25 = BM25Okapi(tokenized_corpus)
+            doc_scores = bm25.get_scores(query_tokens)
+            bm25_scores = [(rows[i]["id"], doc_scores[i], rows[i]) for i in range(len(rows))]
+            bm25_scores.sort(key=lambda x: x[1], reverse=True)
+            bm25_rank = {item[0]: rank + 1 for rank, item in enumerate(bm25_scores)}
+        except Exception:
+            bm25_rank = {r["id"]: 999 for r in rows}
+    else:
+        bm25_rank = {r["id"]: 999 for r in rows}
+
+    # 3. Reciprocal Rank Fusion (RRF)
+    # RRF Score = 1 / (60 + VectorRank) + 1 / (60 + BM25Rank)
+    k_rrf = 60.0
+    combined = []
+    
+    row_map = {r["id"]: r for r in rows}
+    for chunk_id, r in row_map.items():
+        v_r = vector_rank.get(chunk_id, 999)
+        b_r = bm25_rank.get(chunk_id, 999)
+        
+        # Calculate RRF score
+        rrf_score = (1.0 / (k_rrf + v_r)) + (1.0 / (k_rrf + b_r))
+        
+        # Retrieve raw vector similarity for display
+        raw_vec_score = next((x[1] for x in vector_scores if x[0] == chunk_id), 0.0)
+        
+        combined.append({
             "chunk_id": r["id"],
             "document_id": r["document_id"],
             "filename": r["filename"],
             "chunk_index": r["chunk_index"],
             "content": r["content"],
-            "similarity_score": score
+            "similarity_score": raw_vec_score,
+            "rrf_score": rrf_score,
+            "vector_rank": v_r,
+            "bm25_rank": b_r
         })
-        
-    scored.sort(key=lambda x: x["similarity_score"], reverse=True)
-    return scored[:top_k]
+
+    # Sort by highest combined RRF fusion score
+    combined.sort(key=lambda x: x["rrf_score"], reverse=True)
+    return combined[:top_k]
+
+def search_similar_chunks(query_vector: List[float], collection_id: Optional[int] = None, top_k: int = 4, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+    """Legacy vector-only search fallback."""
+    return search_hybrid_chunks("", query_vector, collection_id=collection_id, top_k=top_k, db_path=db_path)
 
 # ==========================================
 # QUERY HISTORY

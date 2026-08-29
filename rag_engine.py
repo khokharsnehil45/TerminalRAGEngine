@@ -273,8 +273,8 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
     # 1. Embed query
     q_vec = get_embedding(query_str, cfg)
     
-    # 2. Retrieve top-k context chunks
-    sources = db.search_similar_chunks(q_vec, collection_id=collection_id, top_k=top_k)
+    # 2. Retrieve top-k context chunks using Hybrid BM25 + Vector Fusion
+    sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
     
     if not sources:
         context_block = "No relevant context found in the local knowledge base."
@@ -366,9 +366,9 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
     import time
     start_t = time.time()
     
-    # 1. Embed query & retrieve context
+    # 1. Embed query & retrieve context via Hybrid BM25 + Vector RRF
     q_vec = get_embedding(query_str, cfg)
-    sources = db.search_similar_chunks(q_vec, collection_id=collection_id, top_k=top_k)
+    sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
     
     yield {"type": "sources", "sources": sources}
     
