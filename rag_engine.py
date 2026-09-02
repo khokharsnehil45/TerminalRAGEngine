@@ -18,12 +18,24 @@ DEFAULT_CONFIG = {
     "embedding_provider": "ollama", # "ollama" or "gemini"
     "ollama_host": "http://localhost:11434",
     "embedding_model": "nomic-embed-text",
-    "llm_provider": "ollama",
+    "llm_provider": "ollama", # "ollama", "gemini", "openai", "anthropic", "groq"
     "ollama_llm_model": "llama3.2:3b",
+    
+    # Cloud Providers
     "gemini_api_key": "",
     "gemini_model": "gemini-2.5-flash",
+    "openai_api_key": "",
+    "openai_model": "gpt-4o-mini",
+    "anthropic_api_key": "",
+    "anthropic_model": "claude-3-5-sonnet-20241022",
+    "groq_api_key": "",
+    "groq_model": "llama-3.3-70b-versatile",
+    
+    # RAG Settings
     "chunk_size": 800,
-    "chunk_overlap": 150
+    "chunk_overlap": 150,
+    "enable_reranker": True,
+    "cli_theme": "cyberpunk"
 }
 
 def load_config() -> Dict[str, Any]:
@@ -298,6 +310,104 @@ def calculate_retrieval_confidence(sources: List[Dict[str, Any]]) -> Dict[str, A
         "top_rrf": round(top_rrf, 4)
     }
 
+# ==========================================
+# SOTA FLASHRANK RERANKER
+# ==========================================
+
+_FLASHRANK_CLIENT = None
+
+def get_flashrank_client():
+    global _FLASHRANK_CLIENT
+    if _FLASHRANK_CLIENT is None:
+        try:
+            from flashrank import Ranker
+            _FLASHRANK_CLIENT = Ranker()
+        except Exception:
+            _FLASHRANK_CLIENT = False
+    return _FLASHRANK_CLIENT
+
+def rerank_passages(query: str, passages: List[Dict[str, Any]], top_k: int = 4) -> List[Dict[str, Any]]:
+    """Rerank candidate passages with high-precision Cross-Encoder FlashRank model."""
+    if not passages:
+        return []
+    
+    ranker = get_flashrank_client()
+    if not ranker or ranker is False:
+        return passages[:top_k]
+
+    try:
+        from flashrank import RerankRequest
+        formatted_docs = [
+            {"id": str(p["chunk_id"]), "text": p["content"], "meta": p}
+            for p in passages
+        ]
+        rerank_req = RerankRequest(query=query, passages=formatted_docs)
+        results = ranker.rerank(rerank_req)
+        
+        reranked = []
+        for r in results[:top_k]:
+            meta = r["meta"]
+            meta["similarity_score"] = float(r["score"])
+            reranked.append(meta)
+        return reranked
+    except Exception:
+        return passages[:top_k]
+
+# ==========================================
+# GITIGNORE-AWARE REPOSITORY INGESTION
+# ==========================================
+
+import pathspec
+
+def scan_git_repository(repo_path: Path) -> List[Path]:
+    """Scans repository respecting .gitignore patterns and filtering build junk."""
+    repo = repo_path.resolve()
+    if not repo.is_dir():
+        return []
+
+    # Read .gitignore if exists
+    patterns = [
+        ".git", ".git/**", "node_modules/**", "__pycache__/**", "*.pyc", 
+        "dist/**", "build/**", "venv/**", ".venv/**", "*.egg-info/**", 
+        "target/**", ".next/**", ".nuxt/**", "*.min.js", "*.min.css",
+        ".DS_Store", "*.sqlite", "*.db", ".trag_database.db"
+    ]
+    
+    gitignore_file = repo / ".gitignore"
+    if gitignore_file.exists():
+        try:
+            with open(gitignore_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#"):
+                        patterns.append(stripped)
+        except Exception:
+            pass
+
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    
+    SUPPORTED_EXTS = {
+        ".txt", ".md", ".pdf", ".csv", ".tsv", ".json", ".py", ".js", ".ts",
+        ".jsx", ".tsx", ".rs", ".go", ".cpp", ".c", ".h", ".hpp", ".sh",
+        ".yaml", ".yml", ".toml", ".sql", ".html", ".css", ".java"
+    }
+
+    matched_files = []
+    for root, dirs, files in os.walk(repo):
+        rel_root = Path(root).relative_to(repo)
+        
+        # Filter directories in place to prevent scanning inside ignored trees
+        dirs[:] = [d for d in dirs if not spec.match_file(str(rel_root / d)) and d not in [".git", "node_modules", "venv", "__pycache__"]]
+        
+        for f in files:
+            file_path = Path(root) / f
+            rel_file = rel_root / f
+            if file_path.suffix.lower() in SUPPORTED_EXTS:
+                if not spec.match_file(str(rel_file)):
+                    matched_files.append(file_path)
+
+    return matched_files
+
 def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 4, session_id: Optional[int] = None, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cfg = config or load_config()
     import time
@@ -308,11 +418,18 @@ def query_rag(query_str: str, collection_id: Optional[int] = None, top_k: int = 
     q_vec = get_embedding(query_str, cfg)
     emb_time_ms = (time.time() - t_emb_start) * 1000
     
-    # 2. Retrieve top-k context chunks using Hybrid BM25 + Vector Fusion
+    # 2. Retrieve candidate context chunks using Hybrid BM25 + Vector Fusion
     t_ret_start = time.time()
-    sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
-    ret_time_ms = (time.time() - t_ret_start) * 1000
+    fetch_k = top_k * 3 if cfg.get("enable_reranker", True) else top_k
+    candidates = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=fetch_k)
     
+    # 3. Apply SOTA FlashRank Reranker
+    if cfg.get("enable_reranker", True) and len(candidates) > 1:
+        sources = rerank_passages(query_str, candidates, top_k=top_k)
+    else:
+        sources = candidates[:top_k]
+        
+    ret_time_ms = (time.time() - t_ret_start) * 1000
     confidence = calculate_retrieval_confidence(sources)
     
     # Guardrail Check: If confidence is critically low and not conversational follow-up
@@ -411,6 +528,59 @@ Detailed, direct & accurate answer:"""
                     response_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
             except Exception as e:
                 response_text = f"❌ Gemini API Error: {e}"
+
+    elif llm_provider in ["openai", "groq"]:
+        is_groq = (llm_provider == "groq")
+        api_key = cfg.get("groq_api_key", "").strip() if is_groq else cfg.get("openai_api_key", "").strip()
+        model_name = cfg.get("groq_model", "llama-3.3-70b-versatile") if is_groq else cfg.get("openai_model", "gpt-4o-mini")
+        url = "https://api.groq.com/openai/v1/chat/completions" if is_groq else "https://api.openai.com/v1/chat/completions"
+        provider_title = "Groq" if is_groq else "OpenAI"
+
+        if not api_key:
+            response_text = f"❌ {provider_title} API key is missing. Configure it in Settings."
+        else:
+            payload = json.dumps({
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            })
+            try:
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    response_text = data["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                response_text = f"❌ {provider_title} API Error: {e}"
+
+    elif llm_provider == "anthropic":
+        api_key = cfg.get("anthropic_api_key", "").strip()
+        model_name = cfg.get("anthropic_model", "claude-3-5-sonnet-20241022")
+        if not api_key:
+            response_text = "❌ Anthropic API key is missing. Configure it in Settings."
+        else:
+            url = "https://api.anthropic.com/v1/messages"
+            payload = json.dumps({
+                "model": model_name,
+                "max_tokens": 2048,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": prompt}]
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            })
+            try:
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    response_text = data["content"][0]["text"].strip()
+            except Exception as e:
+                response_text = f"❌ Anthropic API Error: {e}"
                 
     latency = time.time() - t0
     llm_time_ms = (time.time() - t_llm_start) * 1000
@@ -447,7 +617,14 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
     emb_ms = (time.time() - t_emb) * 1000
     
     t_ret = time.time()
-    sources = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=top_k)
+    fetch_k = top_k * 3 if cfg.get("enable_reranker", True) else top_k
+    candidates = db.search_hybrid_chunks(query_str, q_vec, collection_id=collection_id, top_k=fetch_k)
+    
+    if cfg.get("enable_reranker", True) and len(candidates) > 1:
+        sources = rerank_passages(query_str, candidates, top_k=top_k)
+    else:
+        sources = candidates[:top_k]
+        
     ret_ms = (time.time() - t_ret) * 1000
     
     confidence = calculate_retrieval_confidence(sources)
@@ -527,25 +704,129 @@ def stream_query_rag(query_str: str, collection_id: Optional[int] = None, top_k:
         api_key = cfg.get("gemini_api_key", "").strip()
         model_name = cfg.get("gemini_model", "gemini-2.5-flash")
         if not api_key:
-            err_msg = "❌ Gemini API Key is missing."
+            err_msg = "❌ Gemini API Key is missing. Please configure it in Engine Settings."
             full_response += err_msg
             yield {"type": "token", "token": err_msg}
         else:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?key={api_key}"
+            # Use Server-Sent Events (alt=sse) for true low-latency real-time token streaming
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?alt=sse&key={api_key}"
             payload = json.dumps({
                 "contents": [{"parts": [{"text": f"{system_prompt}\n\n{prompt}"}]}]
             }).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=45) as resp:
-                    raw = resp.read().decode("utf-8")
-                    data = json.loads(raw)
-                    for item in data:
-                        token = item["candidates"][0]["content"]["parts"][0]["text"]
-                        full_response += token
-                        yield {"type": "token", "token": token}
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    for raw_line in resp:
+                        line = raw_line.decode("utf-8").strip()
+                        if line.startswith("data: "):
+                            json_str = line[6:].strip()
+                            if json_str:
+                                try:
+                                    data = json.loads(json_str)
+                                    candidates = data.get("candidates", [])
+                                    if candidates:
+                                        parts = candidates[0].get("content", {}).get("parts", [])
+                                        for p in parts:
+                                            token = p.get("text", "")
+                                            if token:
+                                                full_response += token
+                                                yield {"type": "token", "token": token}
+                                except json.JSONDecodeError:
+                                    continue
             except Exception as e:
-                err_msg = f"❌ Gemini Error: {e}"
+                err_msg = f"\n❌ Gemini Cloud Stream Error: {e}"
+                full_response += err_msg
+                yield {"type": "token", "token": err_msg}
+
+    elif llm_provider in ["openai", "groq"]:
+        # OpenAI or Groq (OpenAI-compatible SSE streaming API)
+        is_groq = (llm_provider == "groq")
+        api_key = cfg.get("groq_api_key", "").strip() if is_groq else cfg.get("openai_api_key", "").strip()
+        model_name = cfg.get("groq_model", "llama-3.3-70b-versatile") if is_groq else cfg.get("openai_model", "gpt-4o-mini")
+        url = "https://api.groq.com/openai/v1/chat/completions" if is_groq else "https://api.openai.com/v1/chat/completions"
+        provider_title = "Groq" if is_groq else "OpenAI"
+
+        if not api_key:
+            err_msg = f"❌ {provider_title} API Key is missing. Please configure it in Engine Settings."
+            full_response += err_msg
+            yield {"type": "token", "token": err_msg}
+        else:
+            payload = json.dumps({
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "stream": True
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            })
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    for raw_line in resp:
+                        line = raw_line.decode("utf-8").strip()
+                        if line.startswith("data: "):
+                            if line == "data: [DONE]":
+                                break
+                            json_str = line[6:].strip()
+                            if json_str:
+                                try:
+                                    data = json.loads(json_str)
+                                    choices = data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        token = delta.get("content", "")
+                                        if token:
+                                            full_response += token
+                                            yield {"type": "token", "token": token}
+                                except json.JSONDecodeError:
+                                    continue
+            except Exception as e:
+                err_msg = f"\n❌ {provider_title} Stream Error: {e}"
+                full_response += err_msg
+                yield {"type": "token", "token": err_msg}
+
+    elif llm_provider == "anthropic":
+        api_key = cfg.get("anthropic_api_key", "").strip()
+        model_name = cfg.get("anthropic_model", "claude-3-5-sonnet-20241022")
+        if not api_key:
+            err_msg = "❌ Anthropic API Key is missing. Please configure it in Engine Settings."
+            full_response += err_msg
+            yield {"type": "token", "token": err_msg}
+        else:
+            url = "https://api.anthropic.com/v1/messages"
+            payload = json.dumps({
+                "model": model_name,
+                "max_tokens": 2048,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            })
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    for raw_line in resp:
+                        line = raw_line.decode("utf-8").strip()
+                        if line.startswith("data: "):
+                            json_str = line[6:].strip()
+                            if json_str:
+                                try:
+                                    data = json.loads(json_str)
+                                    if data.get("type") == "content_block_delta":
+                                        token = data.get("delta", {}).get("text", "")
+                                        if token:
+                                            full_response += token
+                                            yield {"type": "token", "token": token}
+                                except json.JSONDecodeError:
+                                    continue
+            except Exception as e:
+                err_msg = f"\n❌ Anthropic Stream Error: {e}"
                 full_response += err_msg
                 yield {"type": "token", "token": err_msg}
 

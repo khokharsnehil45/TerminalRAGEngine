@@ -38,8 +38,111 @@ CUSTOM_STYLE = Style([
 
 ACTIVE_COLLECTION = {"id": 1, "name": "default"}
 
+# Dynamic CLI Themes
+THEMES = {
+    "cyberpunk": {
+        "name": "⚡ Cyberpunk Neon (Purple / Pink / Cyan)",
+        "gradient": ["#a855f7", "#ec4899", "#f43f5e", "#06b6d4", "#3b82f6", "#a855f7"],
+        "border": "#a855f7",
+        "accent": "#ec4899",
+        "sub": "#06b6d4",
+        "qmark": "fg:#06b6d4 bold",
+        "question": "bold fg:#ec4899",
+        "answer": "fg:#a855f7 bold",
+        "pointer": "fg:#f43f5e bold",
+        "highlighted": "fg:#f43f5e bold",
+        "selected": "fg:#06b6d4 bold",
+        "separator": "fg:#64748b",
+        "instruction": "fg:#06b6d4 italic",
+        "text": "fg:#f8fafc"
+    },
+    "matrix": {
+        "name": "🟢 Matrix Green (Classic Hacker Phosphor)",
+        "gradient": ["#10b981", "#34d399", "#6ee7b7", "#a7f3d0", "#34d399", "#10b981"],
+        "border": "#10b981",
+        "accent": "#10b981",
+        "sub": "#6ee7b7",
+        "qmark": "fg:#10b981 bold",
+        "question": "bold fg:#34d399",
+        "answer": "fg:#6ee7b7 bold",
+        "pointer": "fg:#10b981 bold",
+        "highlighted": "fg:#10b981 bold",
+        "selected": "fg:#34d399 bold",
+        "separator": "fg:#065f46",
+        "instruction": "fg:#6ee7b7 italic",
+        "text": "fg:#ecfdf5"
+    },
+    "amber": {
+        "name": "🔥 Retro Amber CRT (Warm 80s Gold / Bronze)",
+        "gradient": ["#d97706", "#f59e0b", "#fbbf24", "#fef08a", "#fbbf24", "#d97706"],
+        "border": "#f59e0b",
+        "accent": "#f59e0b",
+        "sub": "#fbbf24",
+        "qmark": "fg:#fbbf24 bold",
+        "question": "bold fg:#f59e0b",
+        "answer": "fg:#fef08a bold",
+        "pointer": "fg:#fbbf24 bold",
+        "highlighted": "fg:#fbbf24 bold",
+        "selected": "fg:#f59e0b bold",
+        "separator": "fg:#78350f",
+        "instruction": "fg:#fbbf24 italic",
+        "text": "fg:#fffbeb"
+    },
+    "nordic": {
+        "name": "🌊 Nordic Ice (Deep Navy / Arctic Cyan)",
+        "gradient": ["#1d4ed8", "#2563eb", "#38bdf8", "#7dd3fc", "#38bdf8", "#2563eb"],
+        "border": "#38bdf8",
+        "accent": "#38bdf8",
+        "sub": "#7dd3fc",
+        "qmark": "fg:#38bdf8 bold",
+        "question": "bold fg:#7dd3fc",
+        "answer": "fg:#38bdf8 bold",
+        "pointer": "fg:#38bdf8 bold",
+        "highlighted": "fg:#7dd3fc bold",
+        "selected": "fg:#38bdf8 bold",
+        "separator": "fg:#1e3a8a",
+        "instruction": "fg:#7dd3fc italic",
+        "text": "fg:#f0f9ff"
+    },
+    "crimson": {
+        "name": "🩸 Crimson Obsidian (Stealth Ruby / Bloodline)",
+        "gradient": ["#991b1b", "#dc2626", "#ef4444", "#f87171", "#ef4444", "#dc2626"],
+        "border": "#ef4444",
+        "accent": "#ef4444",
+        "sub": "#f87171",
+        "qmark": "fg:#ef4444 bold",
+        "question": "bold fg:#f87171",
+        "answer": "fg:#fca5a5 bold",
+        "pointer": "fg:#ef4444 bold",
+        "highlighted": "fg:#ef4444 bold",
+        "selected": "fg:#f87171 bold",
+        "separator": "fg:#7f1d1d",
+        "instruction": "fg:#f87171 italic",
+        "text": "fg:#fef2f2"
+    }
+}
+
+def get_current_theme():
+    cfg = rag_engine.load_config()
+    theme_key = cfg.get("cli_theme", "cyberpunk")
+    return THEMES.get(theme_key, THEMES["cyberpunk"])
+
+def get_questionary_style():
+    theme = get_current_theme()
+    return Style([
+        ('qmark', theme['qmark']),
+        ('question', theme['question']),
+        ('answer', theme['answer']),
+        ('pointer', theme['pointer']),
+        ('highlighted', theme['highlighted']),
+        ('selected', theme['selected']),
+        ('separator', theme['separator']),
+        ('instruction', theme['instruction']),
+        ('text', theme['text']),
+    ])
+
 def render_banner(subtitle: str = "⚡ Local Retrieval-Augmented Generation & Vector Intelligence ⚡"):
-    """Renders the retro 3D-styled TRAG banner with Emerald Matrix gradient."""
+    """Renders the retro 3D-styled TRAG banner with active dynamic theme gradient."""
     banner_lines = [
         r"████████╗██████╗  █████╗  ██████╗ ",
         r"╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ ",
@@ -49,30 +152,31 @@ def render_banner(subtitle: str = "⚡ Local Retrieval-Augmented Generation & Ve
         r"   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ "
     ]
     
+    theme = get_current_theme()
     banner_text = Text()
-    # Emerald Matrix Gradient
-    colors = ["#10b981", "#34d399", "#6ee7b7", "#a7f3d0", "#34d399", "#10b981"]
+    colors = theme["gradient"]
     for i, line in enumerate(banner_lines):
         banner_text.append(line + "\n", style=f"bold {colors[i % len(colors)]}")
         
-    banner_text.append(f"  {subtitle}", style="italic #6ee7b7")
+    banner_text.append(f"  {subtitle}", style=f"italic {theme['sub']}")
     
     cfg = rag_engine.load_config()
     provider_str = f"Embedding: {cfg.get('embedding_model', 'nomic-embed-text')} • LLM: {cfg.get('llm_provider', 'ollama')}"
     
     console.print(Panel(
         banner_text,
-        border_style="#10b981",
-        subtitle=f"[bold #6ee7b7]v1.0.0 • Base: {ACTIVE_COLLECTION['name']} • {provider_str}[/bold #6ee7b7]",
+        border_style=theme["border"],
+        subtitle=f"[bold {theme['sub']}]v1.0.0 • Theme: {cfg.get('cli_theme', 'cyberpunk').title()} • Base: {ACTIVE_COLLECTION['name']} • {provider_str}[/bold {theme['sub']}]",
         subtitle_align="right",
         padding=(1, 2)
     ))
 
 def print_wizard_box(title: str, subtitle: str):
+    theme = get_current_theme()
     content = Text()
-    content.append(f"{title}\n", style="bold #10b981")
-    content.append(f"{subtitle}", style="dim #6ee7b7")
-    console.print(Panel(content, border_style="#10b981", padding=(0, 1)))
+    content.append(f"{title}\n", style=f"bold {theme['accent']}")
+    content.append(f"{subtitle}", style=f"dim {theme['sub']}")
+    console.print(Panel(content, border_style=theme["border"], padding=(0, 1)))
 
 def pause_prompt():
     questionary.press_any_key_to_continue("Press any key to return to the main menu...").ask()
@@ -101,13 +205,13 @@ def action_query_rag():
         ))
     choices.append(questionary.Choice("🔙 Back to Main Menu", value=("back", None)))
     
-    session_pick = questionary.select("Choose Chat Session:", choices=choices, style=CUSTOM_STYLE).ask()
+    session_pick = questionary.select("Choose Chat Session:", choices=choices, style=get_questionary_style()).ask()
     if not session_pick or session_pick[0] == "back":
         return
         
     session_id = None
     if session_pick[0] == "new":
-        title = questionary.text("Enter Session Topic / Title (optional):", default="New Research Session", style=CUSTOM_STYLE).ask()
+        title = questionary.text("Enter Session Topic / Title (optional):", default="New Research Session", style=get_questionary_style()).ask()
         session_id = db.create_session(title or "Research Session", collection_id=ACTIVE_COLLECTION["id"])
     else:
         session_id = session_pick[1]["id"]
@@ -123,7 +227,7 @@ def action_query_rag():
             console.print("[dim]────────────────────────────────[/dim]\n")
 
     while True:
-        query_str = questionary.text("💬 You:", style=CUSTOM_STYLE).ask()
+        query_str = questionary.text("💬 You:", style=get_questionary_style()).ask()
         if not query_str or query_str.strip().lower() in ["back", "exit", "q", "quit"]:
             return
         elif query_str.strip().lower() == "clear":
@@ -268,7 +372,7 @@ def terminal_file_explorer(start_path: Path = Path.home()) -> Optional[Path]:
         selection = questionary.select(
             f"Select a file to ingest (Current Directory: {current_dir.name}/):",
             choices=choices,
-            style=CUSTOM_STYLE
+            style=get_questionary_style()
         ).ask()
 
         if not selection or selection[0] == "cancel":
@@ -278,7 +382,7 @@ def terminal_file_explorer(start_path: Path = Path.home()) -> Optional[Path]:
         elif selection[0] == "file":
             return selection[1]
         elif selection[0] == "manual":
-            manual_str = questionary.text("Enter full file path:", style=CUSTOM_STYLE).ask()
+            manual_str = questionary.text("Enter full file path:", style=get_questionary_style()).ask()
             if manual_str and manual_str.strip():
                 m_path = Path(manual_str.strip()).expanduser()
                 if m_path.exists() and m_path.is_file():
@@ -302,7 +406,7 @@ def action_ingest_document():
             "⌨️ Enter File Path Directly (Type or paste path)",
             "🔙 Back to Main Menu"
         ],
-        style=CUSTOM_STYLE
+        style=get_questionary_style()
     ).ask()
     
     if not method or "Back" in method:
@@ -312,7 +416,7 @@ def action_ingest_document():
     if "File Explorer" in method:
         target_path = terminal_file_explorer(start_path=Path.cwd())
     else:
-        path_str = questionary.text("Enter path to file to ingest (e.g. /home/kevin/data.csv):", style=CUSTOM_STYLE).ask()
+        path_str = questionary.text("Enter path to file to ingest (e.g. /home/kevin/data.csv):", style=get_questionary_style()).ask()
         if path_str and path_str.strip():
             target_path = Path(path_str.strip()).expanduser()
 
@@ -366,11 +470,11 @@ def action_list_documents():
     manage = questionary.select(
         "Manage Documents:",
         choices=["🔙 Back to Main Menu", "🗑️ Delete a Document"],
-        style=CUSTOM_STYLE
+        style=get_questionary_style()
     ).ask()
     
     if manage == "🗑️ Delete a Document":
-        del_id = questionary.text("Enter document ID to delete (e.g. 1):", style=CUSTOM_STYLE).ask()
+        del_id = questionary.text("Enter document ID to delete (e.g. 1):", style=get_questionary_style()).ask()
         if del_id and del_id.isdigit():
             if db.delete_document(int(del_id)):
                 console.print(f"[bold green]✓ Deleted document #{del_id} and purged its vector chunks.[/bold green]")
@@ -409,7 +513,7 @@ def action_manage_collections():
     choices.append(questionary.Choice("➕ Create New Knowledge Base", value=("new", None)))
     choices.append(questionary.Choice("🔙 Back to Main Menu", value=("back", None)))
     
-    act = questionary.select("Choose Collection Action:", choices=choices, style=CUSTOM_STYLE).ask()
+    act = questionary.select("Choose Collection Action:", choices=choices, style=get_questionary_style()).ask()
     if not act or act[0] == "back":
         return
         
@@ -420,10 +524,10 @@ def action_manage_collections():
         time.sleep(0.8)
         
     elif act[0] == "new":
-        name = questionary.text("Enter collection name (e.g. legal, research, dev):", style=CUSTOM_STYLE).ask()
+        name = questionary.text("Enter collection name (e.g. legal, research, dev):", style=get_questionary_style()).ask()
         if not name or not name.strip():
             return
-        desc = questionary.text("Description (optional):", style=CUSTOM_STYLE).ask()
+        desc = questionary.text("Description (optional):", style=get_questionary_style()).ask()
         success, msg, cid = db.create_collection(name.strip(), desc)
         if success:
             ACTIVE_COLLECTION = {"id": cid, "name": name.strip().lower()}
@@ -433,62 +537,154 @@ def action_manage_collections():
             console.print(f"\n[bold red]❌ {msg}[/bold red]\n")
             pause_prompt()
 
+def action_theme_selector():
+    console.clear()
+    render_banner()
+    print_wizard_box("🎨 TRAG CLI Theme Switcher", "Choose your preferred retro cyberpunk or matrix color palette.")
+    
+    cfg = rag_engine.load_config()
+    current_key = cfg.get("cli_theme", "cyberpunk")
+    
+    choices = []
+    for k, v in THEMES.items():
+        prefix = "✓ " if k == current_key else "  "
+        choices.append(questionary.Choice(f"{prefix}{v['name']}", value=k))
+    choices.append(questionary.Separator())
+    choices.append(questionary.Choice("🔙 Back to Main Menu", value="back"))
+    
+    selected_theme = questionary.select("Select Theme Palette:", choices=choices, style=get_questionary_style()).ask()
+    if selected_theme and selected_theme != "back":
+        cfg["cli_theme"] = selected_theme
+        rag_engine.save_config(cfg)
+        console.print(f"\n[bold green]✓ Theme switched to '{THEMES[selected_theme]['name']}'![/bold green]\n")
+        time.sleep(0.6)
+
 def action_engine_settings():
     console.clear()
     render_banner()
-    print_wizard_box("⚙️  TRAG Model Engine Settings", "Configure local Ollama host, embedding models, and Gemini fallback.")
+    print_wizard_box("⚙️  TRAG Model & RAG Engine Settings", "Configure local Ollama, Cloud LLMs (OpenAI/Gemini/Claude/Groq), and Reranker.")
     
     cfg = rag_engine.load_config()
     
     llm_p = questionary.select(
         f"LLM Generation Engine (Current: {cfg.get('llm_provider', 'ollama').upper()}):",
         choices=[
-            questionary.Choice("🦙 Local Ollama (llama3.2:3b - 100% Private)", value="ollama"),
-            questionary.Choice("🔷 Google Gemini Cloud (High-speed intelligence)", value="gemini")
+            questionary.Choice("🦙 Local Ollama (llama3.2:3b / mistral / custom - 100% Private)", value="ollama"),
+            questionary.Choice("🔷 Google Gemini Cloud (Gemini 2.5 Flash / 1.5 Pro)", value="gemini"),
+            questionary.Choice("🤖 OpenAI (GPT-4o / GPT-4o-mini)", value="openai"),
+            questionary.Choice("🧠 Anthropic Claude (Claude 3.5 Sonnet)", value="anthropic"),
+            questionary.Choice("⚡ Groq Superfast Inference (Llama 3.3 70B - 300+ tps)", value="groq")
         ],
-        style=CUSTOM_STYLE
+        style=get_questionary_style()
     ).ask()
     if llm_p:
         cfg["llm_provider"] = llm_p
         
     if cfg["llm_provider"] == "ollama":
-        host = questionary.text("Ollama Host URL:", default=cfg.get("ollama_host", "http://localhost:11434"), style=CUSTOM_STYLE).ask()
+        host = questionary.text("Ollama Host URL:", default=cfg.get("ollama_host", "http://localhost:11434"), style=get_questionary_style()).ask()
         if host:
             cfg["ollama_host"] = host.strip()
-        model = questionary.text("Ollama LLM Model Name:", default=cfg.get("ollama_llm_model", "llama3.2:3b"), style=CUSTOM_STYLE).ask()
+        model = questionary.text("Ollama LLM Model Name:", default=cfg.get("ollama_llm_model", "llama3.2:3b"), style=get_questionary_style()).ask()
         if model:
             cfg["ollama_llm_model"] = model.strip()
-    else:
-        k = questionary.text("Google Gemini API Key:", default=cfg.get("gemini_api_key", ""), style=CUSTOM_STYLE).ask()
+    elif cfg["llm_provider"] == "gemini":
+        k = questionary.text("Google Gemini API Key:", default=cfg.get("gemini_api_key", ""), style=get_questionary_style()).ask()
         if k:
             cfg["gemini_api_key"] = k.strip()
-        m = questionary.select("Select Gemini Model:", choices=["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"], default=cfg.get("gemini_model", "gemini-2.5-flash"), style=CUSTOM_STYLE).ask()
+        m = questionary.select("Select Gemini Model:", choices=["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"], default=cfg.get("gemini_model", "gemini-2.5-flash"), style=get_questionary_style()).ask()
         if m:
             cfg["gemini_model"] = m
+    elif cfg["llm_provider"] == "openai":
+        k = questionary.text("OpenAI API Key:", default=cfg.get("openai_api_key", ""), style=get_questionary_style()).ask()
+        if k:
+            cfg["openai_api_key"] = k.strip()
+        m = questionary.select("Select OpenAI Model:", choices=["gpt-4o-mini", "gpt-4o", "o3-mini"], default=cfg.get("openai_model", "gpt-4o-mini"), style=get_questionary_style()).ask()
+        if m:
+            cfg["openai_model"] = m
+    elif cfg["llm_provider"] == "anthropic":
+        k = questionary.text("Anthropic Claude API Key:", default=cfg.get("anthropic_api_key", ""), style=get_questionary_style()).ask()
+        if k:
+            cfg["anthropic_api_key"] = k.strip()
+        m = questionary.select("Select Claude Model:", choices=["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"], default=cfg.get("anthropic_model", "claude-3-5-sonnet-20241022"), style=get_questionary_style()).ask()
+        if m:
+            cfg["anthropic_model"] = m
+    elif cfg["llm_provider"] == "groq":
+        k = questionary.text("Groq API Key:", default=cfg.get("groq_api_key", ""), style=get_questionary_style()).ask()
+        if k:
+            cfg["groq_api_key"] = k.strip()
+        m = questionary.select("Select Groq Model:", choices=["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"], default=cfg.get("groq_model", "llama-3.3-70b-versatile"), style=get_questionary_style()).ask()
+        if m:
+            cfg["groq_model"] = m
+
+    # Reranker setting
+    rerank_toggle = questionary.confirm("Enable SOTA FlashRank Local Cross-Encoder Reranker?", default=cfg.get("enable_reranker", True), style=get_questionary_style()).ask()
+    if rerank_toggle is not None:
+        cfg["enable_reranker"] = rerank_toggle
 
     rag_engine.save_config(cfg)
     console.print("\n[bold green]✓ Configuration saved successfully![/bold green]\n")
     pause_prompt()
 
-def action_launch_gui():
+def action_ingest_git_repo():
     console.clear()
     render_banner()
-    print_wizard_box("🚀 Launching TRAG Web GUI Dashboard", "Starting local server at http://localhost:8450")
-    console.print("\n[bold cyan]Opening your browser to TRAG GUI...[/bold cyan]")
-    console.print("[dim]Press Ctrl+C anytime to stop GUI server and return to terminal.[/dim]\n")
-    import server
-    server.launch_server(port=8450, open_browser=True)
+    print_wizard_box("📦 Ingest Git Codebase / Repository", "Recursively scans codebase while strictly respecting .gitignore patterns.")
+    
+    path_str = questionary.text("Enter path to git repository (e.g. `.` or `/path/to/repo`):", default=".", style=get_questionary_style()).ask()
+    if not path_str or not path_str.strip():
+        return
+        
+    repo_path = Path(path_str.strip()).expanduser().resolve()
+    if not repo_path.exists() or not repo_path.is_dir():
+        console.print(f"[bold red]❌ Directory does not exist: {repo_path}[/bold red]")
+        pause_prompt()
+        return
+
+    with console.status(f"[bold cyan]Scanning repository respecting .gitignore in {repo_path.name}...[/bold cyan]"):
+        matched_files = rag_engine.scan_git_repository(repo_path)
+
+    if not matched_files:
+        console.print("[dim yellow]No valid source files found matching supported extensions.[/dim yellow]")
+        pause_prompt()
+        return
+
+    console.print(f"[bold green]✓ Found {len(matched_files)} valid source files.[/bold green]")
+    confirm = questionary.confirm(f"Proceed to parse, chunk, and embed {len(matched_files)} files into [{ACTIVE_COLLECTION['name']}]?", default=True, style=get_questionary_style()).ask()
+    if not confirm:
+        return
+
+    success_count = 0
+    total_chunks = 0
+    with console.status(f"[bold cyan]Ingesting repository files into TRAG vector store...[/bold cyan]") as status:
+        for idx, f in enumerate(matched_files):
+            status.update(f"[bold cyan]Ingesting [{idx+1}/{len(matched_files)}] {f.name}...[/bold cyan]")
+            try:
+                res = rag_engine.ingest_file(f, collection_id=ACTIVE_COLLECTION["id"])
+                success_count += 1
+                total_chunks += res.get("chunk_count", 0)
+            except Exception as e:
+                pass
+
+    console.print(f"\n[bold green]✓ Successfully ingested {success_count}/{len(matched_files)} files ({total_chunks} total vector chunks created)![/bold green]\n")
+    pause_prompt()
 
 # ==========================================
 # MAIN INTERACTIVE LOOP
 # ==========================================
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1].lower() in ["gui", "web", "--gui", "-g"]:
-        action_launch_gui()
-        return
+    # 1. Pipe support: cat file.log | TRAG "question"
+    if not sys.stdin.isatty():
+        pipe_input = sys.stdin.read().strip()
+        if pipe_input:
+            q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Explain and analyze the provided text."
+            full_query = f"{q}\n\nInput Context:\n{pipe_input[:4000]}"
+            db.init_db()
+            res = rag_engine.query_rag(full_query, collection_id=1, top_k=4)
+            print(res["response"])
+            return
 
-    # Direct query CLI flag: trag "what is vector database?"
+    # 2. Direct query CLI flag: trag "what is vector database?"
     if len(sys.argv) > 1 and sys.argv[1].lower() not in ["help", "-h"]:
         q = " ".join(sys.argv[1:])
         db.init_db()
@@ -512,16 +708,17 @@ def main():
             "Select TRAG Action: (Use arrow keys)",
             choices=[
                 questionary.Choice("💬  Ask / RAG Chat           — Query your documents with cited vector context", value="query"),
-                questionary.Choice("📥  Ingest & Embed Document — Parse & vectorize PDF, CSV, Excel, TXT, MD, Code", value="ingest"),
+                questionary.Choice("📥  Ingest Single Document  — Parse & vectorize PDF, CSV, Excel, TXT, MD, Code", value="ingest"),
+                questionary.Choice("📦  Ingest Git Repository   — Ingest entire codebase with .gitignore filtering", value="git"),
                 questionary.Choice("📂  Terminal File Explorer  — Interactive folder browser to find & ingest files", value="explorer"),
                 questionary.Choice("📜  View Ingested Documents — Browse files, character counts & vector chunks", value="docs"),
                 questionary.Choice("🗂️   Knowledge Base Manager  — Switch or create domain collections", value="collections"),
-                questionary.Choice("💻  Launch TRAG Web GUI     — Minimalist browser dashboard with chat canvas", value="gui"),
-                questionary.Choice("⚙️   Engine Configuration    — Ollama host, embedding models, and Gemini API", value="settings"),
+                questionary.Choice("🎨  Color Theme Switcher    — Switch between Cyberpunk, Matrix, Amber, Nordic, Crimson", value="theme"),
+                questionary.Choice("⚙️   Engine Configuration    — Configure LLMs (Ollama/OpenAI/Claude/Gemini/Groq) & Reranker", value="settings"),
                 questionary.Separator(),
                 questionary.Choice("🚪  Exit TRAG", value="exit")
             ],
-            style=CUSTOM_STYLE
+            style=get_questionary_style()
         ).ask()
         
         if choice is None or choice == "exit":
@@ -531,6 +728,8 @@ def main():
             action_query_rag()
         elif choice == "ingest":
             action_ingest_document()
+        elif choice == "git":
+            action_ingest_git_repo()
         elif choice == "explorer":
             selected = terminal_file_explorer(start_path=Path.cwd())
             if selected and selected.is_file():
@@ -546,8 +745,8 @@ def main():
             action_list_documents()
         elif choice == "collections":
             action_manage_collections()
-        elif choice == "gui":
-            action_launch_gui()
+        elif choice == "theme":
+            action_theme_selector()
         elif choice == "settings":
             action_engine_settings()
 
